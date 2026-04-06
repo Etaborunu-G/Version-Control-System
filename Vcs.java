@@ -1,7 +1,3 @@
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
@@ -10,19 +6,86 @@ import java.util.Scanner;
 import java.util.Stack;
 
 class Version {
-    public int id = 0;
+    public int id;
     public String contents;
 
     public Version(int id, String contents) {
-        this.contents = contents;
         this.id = id;
+        this.contents = contents;
     }
 }
 
-/**
- * This class creates a loop that permanently watches for file changes and saves them in memory.
- * It also allows users to revert the file to a previous version
- */
+class Node {
+    public Version data;
+    public Node next;
+
+    public Node(Version data) {
+        this.data = data;
+        this.next = null;
+    }
+}
+
+class VersionLinkedList {
+    private Node head;
+
+    public boolean isEmpty() {
+        return head == null;
+    }
+
+    public void add(Version version) {
+        Node newNode = new Node(version);
+
+        if (head == null) {
+            head = newNode;
+            return;
+        }
+
+        Node current = head;
+        while (current.next != null) {
+            current = current.next;
+        }
+        current.next = newNode;
+    }
+
+    public Version getLast() {
+        if (head == null) {
+            return null;
+        }
+
+        Node current = head;
+        while (current.next != null) {
+            current = current.next;
+        }
+        return current.data;
+    }
+
+    public void displayHistory() {
+        if (head == null) {
+            System.out.println("No saved versions yet!");
+            return;
+        }
+
+        Node current = head;
+        while (current != null) {
+            System.out.println("Version ID: " + current.data.id);
+            current = current.next;
+        }
+    }
+
+    public Version findById(int id) {
+        Node current = head;
+
+        while (current != null) {
+            if (current.data.id == id) {
+                return current.data;
+            }
+            current = current.next;
+        }
+
+        return null;
+    }
+}
+
 public class Vcs {
 
     static String readFile(String path, Charset encoding) throws IOException {
@@ -30,72 +93,155 @@ public class Vcs {
         return new String(encoded, encoding);
     }
 
-    void sleep(float seconds) {
-        try {
-            wait((long) (seconds * 1000)); //convert to ms
-        } catch (InterruptedException e) {
-            //don't care.
-        }
+    static void writeFile(String path, String contents, Charset encoding) throws IOException {
+        Files.write(Paths.get(path), contents.getBytes(encoding));
     }
+
     public Vcs() {
         Scanner scanner = new Scanner(System.in);
-        int required_cycles_for_file_query = 60; //will only check the file every second.
-        float poll_interval = 1 / 60; //60 polls per second to feel smoother.
-        int cycles_since_last_file_query = 0;
 
-        int next_history_id = 0;
-        Stack<Version> history = new Stack<>();
+        VersionLinkedList history = new VersionLinkedList();
+        Stack<Version> undoStack = new Stack<>();
+        Stack<Version> redoStack = new Stack<>();
+
+        final int[] nextHistoryId = {0};
 
         System.out.println("Welcome to the file watcher! What file would you like to watch?");
-
         String filePath = scanner.nextLine();
 
-        System.out.println("OK! Here are some commands:\nhistory: Displays file history\nrestore: Reverts the file to a point in history");
+        System.out.println("OK! Here are some commands:");
+        System.out.println("history: Displays file history");
+        System.out.println("restore: Reverts the file to a point in history");
+        System.out.println("undo: Reverts to the previous version");
+        System.out.println("redo: Reapplies an undone version");
+        System.out.println("exit: Closes the program");
 
-        for (;;) {
-            sleep(poll_interval);
-            
-            if (cycles_since_last_file_query >= required_cycles_for_file_query) {
-
+        Thread watcher = new Thread(() -> {
+            while (true) {
                 try {
                     String contents = readFile(filePath, Charset.defaultCharset());
 
-                    if (history.empty()) {
-                        history.add(new Version(next_history_id, contents));
-                        next_history_id ++;
+                    synchronized (history) {
+                        if (history.isEmpty()) {
+                            Version newVersion = new Version(nextHistoryId[0], contents);
+                            history.add(newVersion);
+                            undoStack.push(newVersion);
+                            redoStack.clear();
+                            System.out.println("Saved version " + nextHistoryId[0]);
+                            nextHistoryId[0]++;
+                        } else if (!contents.equals(history.getLast().contents)) {
+                            Version newVersion = new Version(nextHistoryId[0], contents);
+                            history.add(newVersion);
+                            undoStack.push(newVersion);
+                            redoStack.clear();
+                            System.out.println("Saved version " + nextHistoryId[0]);
+                            nextHistoryId[0]++;
+                        }
                     }
-                    else if (!contents.equals(history.lastElement().contents)) {
-                        history.add(new Version(next_history_id, contents));
-                        next_history_id ++;
-                    }
-                    //if it is neither of these 2 cases, then it hasn't changed and we don't need to add it.
-                }
-                catch (IOException e) {
+
+                    Thread.sleep(1000);
+                } catch (IOException e) {
                     System.out.println("Your file does not exist!");
                     break;
+                } catch (InterruptedException e) {
+                    break;
                 }
-
-                cycles_since_last_file_query = 0;
             }
-            else {
-                cycles_since_last_file_query ++;
-            }
+        });
 
+        watcher.setDaemon(true);
+        watcher.start();
+
+        while (true) {
             String input = scanner.nextLine().toLowerCase();
 
             switch (input) {
                 case "history":
-                    
+                    synchronized (history) {
+                        history.displayHistory();
+                    }
                     break;
-                case "restore":
 
+                case "restore":
+                    synchronized (history) {
+                        if (history.isEmpty()) {
+                            System.out.println("No saved versions available to restore!");
+                            break;
+                        }
+                    }
+
+                    System.out.println("Which version would you like to restore? (Enter the version ID)");
+                    String restoreInput = scanner.nextLine();
+
+                    try {
+                        int restoreId = Integer.parseInt(restoreInput);
+
+                        synchronized (history) {
+                            Version restoredVersion = history.findById(restoreId);
+
+                            if (restoredVersion != null) {
+                                writeFile(filePath, restoredVersion.contents, Charset.defaultCharset());
+                                undoStack.push(restoredVersion);
+                                redoStack.clear();
+                                System.out.println("Version " + restoreId + " restored successfully!");
+                            } else {
+                                System.out.println("Version " + restoreId + " not found!");
+                            }
+                        }
+                    } catch (NumberFormatException e) {
+                        System.out.println("Invalid version ID! Please enter a valid number.");
+                    } catch (IOException e) {
+                        System.out.println("An error occurred while restoring the file.");
+                    }
                     break;
+
+                case "undo":
+                    if (undoStack.size() <= 1) {
+                        System.out.println("Nothing to undo!");
+                        break;
+                    }
+
+                    try {
+                        Version currentVersion = undoStack.pop();
+                        redoStack.push(currentVersion);
+
+                        Version previousVersion = undoStack.peek();
+                        writeFile(filePath, previousVersion.contents, Charset.defaultCharset());
+
+                        System.out.println("Undo successful! Restored version " + previousVersion.id);
+                    } catch (IOException e) {
+                        System.out.println("An error occurred while undoing the file change.");
+                    }
+                    break;
+
+                case "redo":
+                    if (redoStack.empty()) {
+                        System.out.println("Nothing to redo!");
+                        break;
+                    }
+
+                    try {
+                        Version redoVersion = redoStack.pop();
+                        undoStack.push(redoVersion);
+                        writeFile(filePath, redoVersion.contents, Charset.defaultCharset());
+
+                        System.out.println("Redo successful! Restored version " + redoVersion.id);
+                    } catch (IOException e) {
+                        System.out.println("An error occurred while redoing the file change.");
+                    }
+                    break;
+
+                case "exit":
+                    scanner.close();
+                    return;
 
                 default:
                     System.out.println("Invalid command! Please try again!");
             }
         }
+    }
 
-        scanner.close();
+    public static void main(String[] args) {
+        new Vcs();
     }
 }
