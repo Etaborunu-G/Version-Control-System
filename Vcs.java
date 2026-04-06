@@ -129,7 +129,7 @@ public class Vcs {
                             redoStack.clear();
                             System.out.println("Saved version " + nextHistoryId[0]);
                             nextHistoryId[0]++;
-                        } else if (!contents.equals(history.getLast().contents)) {
+                        } else if (!undoStack.isEmpty() && !contents.equals(undoStack.peek().contents)) {
                             Version newVersion = new Version(nextHistoryId[0], contents);
                             history.add(newVersion);
                             undoStack.push(newVersion);
